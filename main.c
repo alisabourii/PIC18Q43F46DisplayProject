@@ -109,6 +109,7 @@ uint16_t Read_AN0(void) {
 
 void stop(){
     POMPA_SetLow();
+    VALF_SetLow();
     D2_SetHigh();
 }
 
@@ -136,9 +137,9 @@ void tahliye(){
     D3_SetHigh();
     VALF_SetHigh();
 
-    for (uint8_t i = 0; i < 60; i++) {
+    for (uint8_t i = 0; i < 10; i++) {
         if(SW7_GetValue() == 0) {break; stop();}
-        __delay_ms(250);
+        __delay_ms(1000);
     }
 
     VALF_SetLow();
@@ -201,7 +202,8 @@ int main(void) {
             guncelle = 1;
         }
 
-        if (prev_sw2 == 1 && curr_sw2 == 0) {
+        // SW2: Üst Sayaç AZALT (Düşen kenar tespiti) -> BarBasinci >= FarkBasinci + 2 olmalı
+        if (prev_sw2 == 1 && curr_sw2 == 0 && (BarBasinci >= (FarkBasinci+2))) {
             BarBasinci--;
             if (BarBasinci < 0) BarBasinci = 0;
             bar_button_pressed = 1;
@@ -209,7 +211,7 @@ int main(void) {
         }
 
         // SW6: Alt Sayaç ARTIR
-        if (prev_sw6 == 1 && curr_sw6 == 0) {
+        if (prev_sw6 == 1 && curr_sw6 == 0 && ((FarkBasinci) < (BarBasinci-1))) {
             FarkBasinci++;
             if (FarkBasinci > 25) FarkBasinci = 25;
             guncelle = 1;
