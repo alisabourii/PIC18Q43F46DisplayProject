@@ -12,7 +12,9 @@
 #define BTN_SW5     PORTBbits.RB3  // Üst Sayaç ARTIR
 #define BTN_SW3     PORTBbits.RB1  // Alt Sayaç AZALT
 #define BTN_SW6     PORTBbits.RB4  // Alt Sayaç ARTIR
-
+#define BTN_SW7     PORTBbits.RB5  // Stop
+#define BTN_SW4     PORTBbits.RB2  // Start
+#define BTN_SW8     PORTBbits.RB6  // Valf
 // -----------------------------------------------------------------------------
 // ORTAK KATOT 7-SEGMENT DİZİSİ (0 - 9)
 // Bit Sırası: [DP, g, f, e, d, c, b, a]
