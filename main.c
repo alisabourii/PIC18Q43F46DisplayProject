@@ -113,6 +113,7 @@ void stop(){
 }
 
 void start(uint16_t ustLim, uint16_t altLim){
+    D2_SetLow();
     D1_SetHigh();
     
     int val = hatBasinci();
