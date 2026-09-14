@@ -15,6 +15,7 @@
 #define BTN_SW7     PORTBbits.RB5  // Stop
 #define BTN_SW4     PORTBbits.RB2  // Start
 #define BTN_SW8     PORTBbits.RB6  // Valf
+
 // -----------------------------------------------------------------------------
 // ORTAK KATOT 7-SEGMENT DİZİSİ (0 - 9)
 // Bit Sırası: [DP, g, f, e, d, c, b, a]
@@ -59,29 +60,31 @@ void Display_WriteRaw(uint8_t aff1, uint8_t aff2, uint8_t aff3, uint8_t aff4) {
     LATCH_PIN = 0;
 }
 
+// 0-9 arasında onlar basamağı (AFF1 ve AFF3) söner, 10+ olunca yanar
 void Display_UpdateCounters(uint8_t ust, uint8_t alt) {
-    // Üst Sayaç (00 - 99) -> AFF1, AFF2
-    uint8_t d1 = DIGIT_MAP[(ust / 10) % 10];
+    // Üst Sayaç -> AFF1, AFF2
+    uint8_t d1 = (ust >= 10) ? DIGIT_MAP[(ust / 10) % 10] : DISPLAY_BLANK;
     uint8_t d2 = DIGIT_MAP[ust % 10];
 
-    // Alt Sayaç (00 - 99) -> AFF3, AFF4
-    uint8_t d3 = DIGIT_MAP[(alt / 10) % 10];
+    // Alt Sayaç -> AFF3, AFF4
+    uint8_t d3 = (alt >= 10) ? DIGIT_MAP[(alt / 10) % 10] : DISPLAY_BLANK;
     uint8_t d4 = DIGIT_MAP[alt % 10];
 
     Display_WriteRaw(d1, d2, d3, d4);
 }
 
 void Display_UpdatePressure(uint8_t pressure, uint8_t alt) {
-    uint8_t d1 = DIGIT_MAP[(pressure / 10) % 10];
+    uint8_t d1 = (pressure >= 10) ? DIGIT_MAP[(pressure / 10) % 10] : DISPLAY_BLANK;
     uint8_t d2 = DIGIT_MAP[pressure % 10];
-    uint8_t d3 = DIGIT_MAP[(alt / 10) % 10];
+    
+    uint8_t d3 = (alt >= 10) ? DIGIT_MAP[(alt / 10) % 10] : DISPLAY_BLANK;
     uint8_t d4 = DIGIT_MAP[alt % 10];
 
     Display_WriteRaw(d1, d2, d3, d4);
 }
 
 void Display_UpdatePressureOnly(uint8_t pressure) {
-    uint8_t d1 = DIGIT_MAP[(pressure / 10) % 10];
+    uint8_t d1 = (pressure >= 10) ? DIGIT_MAP[(pressure / 10) % 10] : DISPLAY_BLANK;
     uint8_t d2 = DIGIT_MAP[pressure % 10];
 
     Display_WriteRaw(d1, d2, DISPLAY_BLANK, DISPLAY_BLANK);
@@ -94,22 +97,20 @@ int hatBasinci(void);
 // -----------------------------------------------------------------------------
 uint16_t Read_AN0(void) {
     #if defined(ADCC_Initialize) || defined(_ADCC_H)
-        // MCC Melody ADCC kütüphanesi aktifse:
         return ADCC_GetSingleConversion(channel_ANA0);
     #else
-        // Doğrudan Register Seviyesinde Okuma (MCC eklenmemiş olsa bile çalışır):
         ADPCH = 0x00;           // Kanal seçimi: RA0 / ANA0
         ADCON0bits.ON = 1;      // ADC Açık
-        __delay_us(10);         // Örnekleme kondansatörü şarj süresi (Acquisition time)
+        __delay_us(10);         // Acquisition süresi
         
         ADCON0bits.GO = 1;      // Dönüşümü başlat
         while (ADCON0bits.GO);  // Dönüşüm bitene kadar bekle
 
-        return ((uint16_t)((ADRESH << 8) | ADRESL)); // 12-bit ham ADC değeri
+        return ((uint16_t)((ADRESH << 8) | ADRESL));
     #endif
 }
 
-void stop(){
+void stop(void){
     POMPA_SetLow();
     VALF_SetLow();
     D2_SetHigh();
@@ -129,41 +130,36 @@ void start(uint16_t ustLim, uint16_t altLim){
         POMPA_SetLow();
     }
 
-
     D1_SetLow();
 }
 
-
-void tahliye(){
+void tahliye(void){
     D2_SetLow();
     D3_SetHigh();
     VALF_SetHigh();
 
     for (uint8_t i = 0; i < 10; i++) {
-        if(SW7_GetValue() == 0) {break; stop();}
+        if(SW7_GetValue() == 0) {
+            stop();
+            break;
+        }
         __delay_ms(1000);
     }
 
     VALF_SetLow();
     D3_SetLow();
-
     stop();
-
 }
 
-int hatBasinci(){
+int hatBasinci(void){
     uint16_t raw_adc = Read_AN0();
-    // 0-4095 ham değeri 0-99 aralığına ölçekle-> /4 ile 0-25 arasında değer elde edilir
-    uint8_t val = (uint8_t)((raw_adc * 99UL) / 4095UL)/4;
+    uint8_t val = (uint8_t)(((raw_adc * 99UL) / 4095UL) / 4);
     return val;
 }
-
-
 
 int main(void) {
     SYSTEM_Initialize();
 
-    // Çıkış pinleri başlangıç durumu
     SCK_PIN = 0;
     SDO_PIN = 0;
     LATCH_PIN = 0;
@@ -171,7 +167,6 @@ int main(void) {
     int8_t BarBasinci = 0;
     int8_t FarkBasinci = 0;
 
-    // Buton önceki durum kayıtları (Kenar tetikleme için)
     uint8_t prev_sw2 = 1;
     uint8_t prev_sw5 = 1;
     uint8_t prev_sw3 = 1;
@@ -180,9 +175,7 @@ int main(void) {
     uint8_t counter_timeout = 0;
     uint8_t pompa_control_active = 0;
 
-    // Başlangıçta üst displayde gerçek hat basıncını göster
     Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
-
     stop();
 
     while (1) {
@@ -194,9 +187,7 @@ int main(void) {
         uint8_t guncelle = 0;
         uint8_t bar_button_pressed = 0;
 
-
-        // ------Bar basıncı belirle------
-        // SW5: Üst Sayaç ARTIR (Düşen kenar tespiti)
+        // SW5: Üst Sayaç ARTIR
         if (prev_sw5 == 1 && curr_sw5 == 0) {
             BarBasinci++;
             if (BarBasinci > 25) BarBasinci = 25;
@@ -204,8 +195,8 @@ int main(void) {
             guncelle = 1;
         }
 
-        // SW2: Üst Sayaç AZALT (Düşen kenar tespiti) -> BarBasinci >= FarkBasinci + 2 olmalı
-        if (prev_sw2 == 1 && curr_sw2 == 0 && (BarBasinci >= (FarkBasinci+2))) {
+        // SW2: Üst Sayaç AZALT -> BarBasinci >= FarkBasinci + 2 olmalı
+        if (prev_sw2 == 1 && curr_sw2 == 0 && (BarBasinci >= (FarkBasinci + 2))) {
             BarBasinci--;
             if (BarBasinci < 0) BarBasinci = 0;
             bar_button_pressed = 1;
@@ -213,7 +204,7 @@ int main(void) {
         }
 
         // SW6: Alt Sayaç ARTIR
-        if (prev_sw6 == 1 && curr_sw6 == 0 && ((FarkBasinci) < (BarBasinci-1))) {
+        if (prev_sw6 == 1 && curr_sw6 == 0 && (FarkBasinci < (BarBasinci - 1))) {
             FarkBasinci++;
             if (FarkBasinci > 25) FarkBasinci = 25;
             guncelle = 1;
@@ -226,7 +217,6 @@ int main(void) {
             guncelle = 1;
         }
 
-        // Önceki durumları güncelle
         prev_sw2 = curr_sw2;
         prev_sw5 = curr_sw5;
         prev_sw3 = curr_sw3;
@@ -274,11 +264,9 @@ int main(void) {
         if (pompa_control_active) {
             start((uint16_t)BarBasinci, (uint16_t)FarkBasinci);
         }
-        
 
-        __delay_ms(20); // Debounce gecikmesi
-
+        __delay_ms(20);
     }
-
+    
     return 0;
 }
