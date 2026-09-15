@@ -1,4 +1,5 @@
 #include "mcc_generated_files/system/system.h"
+#include <stdbool.h>
 
 // -----------------------------------------------------------------------------
 // DONANIM REGISTER PİNLERİ
@@ -14,7 +15,13 @@
 #define BTN_SW6     PORTBbits.RB4  // Alt Sayaç ARTIR
 #define BTN_SW7     PORTBbits.RB5  // Stop
 #define BTN_SW4     PORTBbits.RB2  // Start
-#define BTN_SW8     PORTBbits.RB6  // Valf
+#define BTN_SW8     PORTBbits.RB6  // Valf / Tahliye
+
+// -----------------------------------------------------------------------------
+// KESME İLE PAYLAŞILAN GLOBAL DEĞİŞKENLER
+// -----------------------------------------------------------------------------
+volatile uint8_t tahliye_saniye = 0;
+volatile uint8_t tahliye_active = 0;
 
 // -----------------------------------------------------------------------------
 // ORTAK KATOT 7-SEGMENT DİZİSİ (0 - 9)
@@ -62,11 +69,9 @@ void Display_WriteRaw(uint8_t aff1, uint8_t aff2, uint8_t aff3, uint8_t aff4) {
 
 // 0-9 arasında onlar basamağı (AFF1 ve AFF3) söner, 10+ olunca yanar
 void Display_UpdateCounters(uint8_t ust, uint8_t alt) {
-    // Üst Sayaç -> AFF1, AFF2
     uint8_t d1 = (ust >= 10) ? DIGIT_MAP[(ust / 10) % 10] : DISPLAY_BLANK;
     uint8_t d2 = DIGIT_MAP[ust % 10];
 
-    // Alt Sayaç -> AFF3, AFF4
     uint8_t d3 = (alt >= 10) ? DIGIT_MAP[(alt / 10) % 10] : DISPLAY_BLANK;
     uint8_t d4 = DIGIT_MAP[alt % 10];
 
@@ -81,13 +86,6 @@ void Display_UpdatePressure(uint8_t pressure, uint8_t alt) {
     uint8_t d4 = DIGIT_MAP[alt % 10];
 
     Display_WriteRaw(d1, d2, d3, d4);
-}
-
-void Display_UpdatePressureOnly(uint8_t pressure) {
-    uint8_t d1 = (pressure >= 10) ? DIGIT_MAP[(pressure / 10) % 10] : DISPLAY_BLANK;
-    uint8_t d2 = DIGIT_MAP[pressure % 10];
-
-    Display_WriteRaw(d1, d2, DISPLAY_BLANK, DISPLAY_BLANK);
 }
 
 int hatBasinci(void);
@@ -110,48 +108,68 @@ uint16_t Read_AN0(void) {
     #endif
 }
 
-void stop(void){
+void stop(void) {
     POMPA_SetLow();
     VALF_SetLow();
     D2_SetHigh();
+    D1_SetLow();
+    D3_SetLow();
 }
 
-void start(uint16_t ustLim, uint16_t altLim){
+// -----------------------------------------------------------------------------
+// BANT ARALIĞI KONTROLÜ (WINDOW COMPARATOR)
+// -----------------------------------------------------------------------------
+void start(uint16_t ustLim, uint16_t altLim) {
     D2_SetLow();
     D1_SetHigh();
     
     int val = hatBasinci();
-    Display_UpdatePressureOnly((uint8_t)val);
-    
-    if(val >= altLim && val <= ustLim){
+
+    // Basınç belirlenen iki limitin tam arasındaysa pompa açık, dışındaysa kapalı
+    if (val >= altLim && val <= ustLim) {
         POMPA_SetHigh();
-    }
-    else{
+    } 
+    else {
         POMPA_SetLow();
     }
-
-    D1_SetLow();
 }
 
-void tahliye(void){
+// -----------------------------------------------------------------------------
+// TIMER0 DONANIM AYARI (1 Saniye Kesmesi İçin)
+// -----------------------------------------------------------------------------
+void Timer0_Init(void) {
+    T0CON0 = 0x10;       // 16-bit timer modu (EN = 0)
+    T0CON1 = 0x48;       // Clock: Fosc/4, Prescaler: 1:256
+    
+    TMR0H = 0x0B;        // 3036 Preload
+    TMR0L = 0xDC;
+
+    PIR3bits.TMR0IF = 0;
+    PIE3bits.TMR0IE = 1; // Kesme yetkisi
+}
+
+void tahliye_baslat(void) {
     D2_SetLow();
     D3_SetHigh();
     VALF_SetHigh();
 
-    for (uint8_t i = 0; i < 10; i++) {
-        if(SW7_GetValue() == 0) {
-            stop();
-            break;
-        }
-        __delay_ms(1000);
-    }
+    tahliye_saniye = 0;
+    tahliye_active = 1;
 
-    VALF_SetLow();
-    D3_SetLow();
+    TMR0H = 0x0B;
+    TMR0L = 0xDC;
+    PIR3bits.TMR0IF = 0;
+    T0CON0bits.EN = 1;   // Timer0 ON
+}
+
+void tahliye_durdur(void) {
+    tahliye_active = 0;
+    tahliye_saniye = 0;
+    T0CON0bits.EN = 0;   // Timer0 OFF
     stop();
 }
 
-int hatBasinci(void){
+int hatBasinci(void) {
     uint16_t raw_adc = Read_AN0();
     uint8_t val = (uint8_t)(((raw_adc * 99UL) / 4095UL) / 4);
     return val;
@@ -164,8 +182,8 @@ int main(void) {
     SDO_PIN = 0;
     LATCH_PIN = 0;
 
-    int8_t BarBasinci = 0;
-    int8_t FarkBasinci = 0;
+    int8_t BarBasinci = 10;
+    int8_t FarkBasinci = 5;
 
     uint8_t prev_sw2 = 1;
     uint8_t prev_sw5 = 1;
@@ -174,6 +192,9 @@ int main(void) {
     uint8_t counter_mode = 0;
     uint8_t counter_timeout = 0;
     uint8_t pompa_control_active = 0;
+
+    Timer0_Init();
+    INTCON0bits.GIE = 1;
 
     Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
     stop();
@@ -185,32 +206,29 @@ int main(void) {
         uint8_t curr_sw6 = BTN_SW6;
 
         uint8_t guncelle = 0;
-        uint8_t bar_button_pressed = 0;
 
-        // SW5: Üst Sayaç ARTIR
+        // SW5: Üst Sayaç (Üst Limit) ARTIR
         if (prev_sw5 == 1 && curr_sw5 == 0) {
             BarBasinci++;
             if (BarBasinci > 25) BarBasinci = 25;
-            bar_button_pressed = 1;
             guncelle = 1;
         }
 
-        // SW2: Üst Sayaç AZALT -> BarBasinci >= FarkBasinci + 2 olmalı
+        // SW2: Üst Sayaç (Üst Limit) AZALT -> Üst limit, alt limitin altına düşemez
         if (prev_sw2 == 1 && curr_sw2 == 0 && (BarBasinci >= (FarkBasinci + 2))) {
             BarBasinci--;
             if (BarBasinci < 0) BarBasinci = 0;
-            bar_button_pressed = 1;
             guncelle = 1;
         }
 
-        // SW6: Alt Sayaç ARTIR
+        // SW6: Alt Sayaç (Alt Limit) ARTIR -> Alt limit, üst limitin üstüne çıkamaz
         if (prev_sw6 == 1 && curr_sw6 == 0 && (FarkBasinci < (BarBasinci - 1))) {
             FarkBasinci++;
             if (FarkBasinci > 25) FarkBasinci = 25;
             guncelle = 1;
         }
 
-        // SW3: Alt Sayaç AZALT
+        // SW3: Alt Sayaç (Alt Limit) AZALT
         if (prev_sw3 == 1 && curr_sw3 == 0) {
             FarkBasinci--;
             if (FarkBasinci < 0) FarkBasinci = 0;
@@ -222,45 +240,54 @@ int main(void) {
         prev_sw3 = curr_sw3;
         prev_sw6 = curr_sw6;
 
+        // Ayar butonuna basıldığında ekranı hedef değerleri gösterecek moda al
         if (guncelle) {
-            if (bar_button_pressed) {
-                counter_mode = 1;
-                counter_timeout = 0;
-                Display_UpdateCounters((uint8_t)BarBasinci, (uint8_t)FarkBasinci);
-            }
-            else {
-                Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
-            }
+            counter_mode = 1;
+            counter_timeout = 0;
         }
 
+        // MERKEZİ EKRAN YÖNETİMİ
         if (counter_mode) {
-            if (counter_timeout < 50) {
-                counter_timeout++;
-            }
-
+            // Butona basılırken veya basıldıktan sonra ~1 sn boyunca ayar değerleri görünür
+            Display_UpdateCounters((uint8_t)BarBasinci, (uint8_t)FarkBasinci);
+            counter_timeout++;
             if (counter_timeout >= 50) {
                 counter_mode = 0;
-                Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
             }
         }
-        else if (!guncelle) {
+        else {
+            // Normal gösterim: Üstte anlık hat basıncı, altta belirlenen alt limit
             Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
         }
 
+        // SW4: START
         if (SW4_GetValue() == 0) {
+            if (tahliye_active) {
+                tahliye_durdur();
+            }
             pompa_control_active = 1;
         }
 
+        // SW7: STOP
         if (SW7_GetValue() == 0) {
             pompa_control_active = 0;
-            stop();
+            if (tahliye_active) {
+                tahliye_durdur();
+            } else {
+                stop();
+            }
         }
 
+        // SW8: TAHLİYE
         if (SW8_GetValue() == 0) {
-            pompa_control_active = 0;
-            tahliye();
+            if (!tahliye_active) {
+                pompa_control_active = 0;
+                stop();
+                tahliye_baslat();
+            }
         }
 
+        // Pompa Kontrolü: Butonla limit değiştirildiği an döngü içinde anında değerlendirilir
         if (pompa_control_active) {
             start((uint16_t)BarBasinci, (uint16_t)FarkBasinci);
         }
