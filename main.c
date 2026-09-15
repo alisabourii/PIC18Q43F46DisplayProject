@@ -274,12 +274,7 @@ int main(void) {
 
         // SW5: Üst Sayaç (Üst Limit) ARTIR
         if (prev_sw5 == 1 && curr_sw5 == 0) {
-            if(butonAtlama) {
-                butonAtlama = false;
-            }
-            else {
-                BarBasinci++;
-            }
+            BarBasinci++;
             if (BarBasinci > 25) BarBasinci = 25;
             guncelle = 1;
             
@@ -294,7 +289,12 @@ int main(void) {
 
         // SW6: Alt Sayaç (Alt Limit) ARTIR
         if (prev_sw6 == 1 && curr_sw6 == 0 && (FarkBasinci < (BarBasinci - 1))) {
-            FarkBasinci++;
+            if(butonAtlama) {
+                butonAtlama = false;
+            }
+            else {
+                FarkBasinci++;
+            }
             if (FarkBasinci > 25) FarkBasinci = 25;
             guncelle = 1;
         }
