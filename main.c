@@ -180,7 +180,7 @@ void start(uint16_t ustLim, uint16_t altLim) {
     
     int val = hatBasinci();
 
-    if (val >= altLim && val <= ustLim) {
+    if (val <= ustLim) {
         POMPA_SetHigh();
     } 
     else {
@@ -229,6 +229,8 @@ int hatBasinci(void) {
     return val;
 }
 
+bool butonAtlama = true; // Başlangıçta buton atlama aktif, ilk basışta atlanacak
+
 int main(void) {
     SYSTEM_Initialize();
 
@@ -272,9 +274,15 @@ int main(void) {
 
         // SW5: Üst Sayaç (Üst Limit) ARTIR
         if (prev_sw5 == 1 && curr_sw5 == 0) {
-            BarBasinci++;
+            if(butonAtlama) {
+                butonAtlama = false;
+            }
+            else {
+                BarBasinci++;
+            }
             if (BarBasinci > 25) BarBasinci = 25;
             guncelle = 1;
+            
         }
 
         // SW2: Üst Sayaç (Üst Limit) AZALT
@@ -324,7 +332,8 @@ int main(void) {
             }
         }
         else {
-            Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
+            //Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
+            Display_UpdatePressure((uint8_t)BarBasinci, (uint8_t)hatBasinci());
         }
 
         // SW4: START
