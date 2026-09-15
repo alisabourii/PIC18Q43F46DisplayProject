@@ -18,6 +18,14 @@
 #define BTN_SW8     PORTBbits.RB6  // Valf / Tahliye
 
 // -----------------------------------------------------------------------------
+// EEPROM ADRES TANIMLARI
+// PIC18F46Q43 Data EEPROM başlangıç taban adresi: 0x380000
+// -----------------------------------------------------------------------------
+#define EEPROM_BASE_ADDR   0x380000UL
+#define EEPROM_ADDR_BAR    0x00
+#define EEPROM_ADDR_FARK   0x01
+
+// -----------------------------------------------------------------------------
 // KESME İLE PAYLAŞILAN GLOBAL DEĞİŞKENLER
 // -----------------------------------------------------------------------------
 volatile uint8_t tahliye_saniye = 0;
@@ -41,6 +49,53 @@ const uint8_t DIGIT_MAP[] = {
 };
 
 #define DISPLAY_BLANK 0x00
+
+// -----------------------------------------------------------------------------
+// PIC18F46Q43 DONANIMSAL NVM EEPROM OKUMA / YAZMA FONKSİYONLARI
+// -----------------------------------------------------------------------------
+uint8_t EEPROM_Oku(uint16_t offset) {
+    uint32_t tamAdres = EEPROM_BASE_ADDR + offset;
+
+    NVMADRU = (uint8_t)((tamAdres >> 16) & 0x3F);
+    NVMADRH = (uint8_t)((tamAdres >> 8) & 0xFF);
+    NVMADRL = (uint8_t)(tamAdres & 0xFF);
+
+    NVMCON1bits.CMD = 0x00; // Byte Read komutu
+    NVMCON0bits.GO = 1;     // Okumayı başlat
+    while (NVMCON0bits.GO); // Tamamlanmasını bekle
+
+    return NVMDATL;
+}
+
+void EEPROM_GuvenliYaz(uint16_t offset, uint8_t veri) {
+    // Ömür koruma: Aynı veri zaten varsa yazma işlemini pas geç
+    if (EEPROM_Oku(offset) == veri) {
+        return;
+    }
+
+    uint32_t tamAdres = EEPROM_BASE_ADDR + offset;
+
+    NVMADRU = (uint8_t)((tamAdres >> 16) & 0x3F);
+    NVMADRH = (uint8_t)((tamAdres >> 8) & 0xFF);
+    NVMADRL = (uint8_t)(tamAdres & 0xFF);
+
+    NVMDATL = veri;
+
+    NVMCON1bits.CMD = 0x03; // DFM / EEPROM Byte Write komutu
+
+    // NVM Kilit Açma Dizisi (Unlock Sequence)
+    uint8_t gie_durum = INTCON0bits.GIE;
+    INTCON0bits.GIE = 0;    // Yazma anında kesmeleri kapat
+
+    NVMLOCK = 0x55;
+    NVMLOCK = 0xAA;
+    NVMCON0bits.GO = 1;     // Yazmayı başlat
+
+    while (NVMCON0bits.GO); // Donanımsal yazma bitene kadar bekle (yaklaşık 4 ms)
+
+    NVMCON1bits.CMD = 0x00; // Komutu temizle
+    INTCON0bits.GIE = gie_durum; // Kesmeleri eski durumuna getir
+}
 
 void Shift_Byte(uint8_t val) {
     for (int8_t i = 7; i >= 0; i--) {
@@ -125,7 +180,6 @@ void start(uint16_t ustLim, uint16_t altLim) {
     
     int val = hatBasinci();
 
-    // Basınç belirlenen iki limitin tam arasındaysa pompa açık, dışındaysa kapalı
     if (val >= altLim && val <= ustLim) {
         POMPA_SetHigh();
     } 
@@ -182,8 +236,17 @@ int main(void) {
     SDO_PIN = 0;
     LATCH_PIN = 0;
 
-    int8_t BarBasinci = 10;
-    int8_t FarkBasinci = 5;
+    // PIC18F46Q43 Dahili EEPROM'dan başlangıç değerlerini çek
+    int8_t BarBasinci = (int8_t)EEPROM_Oku(EEPROM_ADDR_BAR);
+    int8_t FarkBasinci = (int8_t)EEPROM_Oku(EEPROM_ADDR_FARK);
+
+    // EEPROM boşsa (0xFF gelirse) veya mantıksız bir değerse varsayılan değerleri yükle
+    if (BarBasinci > 25 || BarBasinci < 0) {
+        BarBasinci = 10;
+    }
+    if (FarkBasinci > 25 || FarkBasinci < 0 || FarkBasinci >= BarBasinci) {
+        FarkBasinci = 5;
+    }
 
     uint8_t prev_sw2 = 1;
     uint8_t prev_sw5 = 1;
@@ -214,14 +277,14 @@ int main(void) {
             guncelle = 1;
         }
 
-        // SW2: Üst Sayaç (Üst Limit) AZALT -> Üst limit, alt limitin altına düşemez
+        // SW2: Üst Sayaç (Üst Limit) AZALT
         if (prev_sw2 == 1 && curr_sw2 == 0 && (BarBasinci >= (FarkBasinci + 2))) {
             BarBasinci--;
             if (BarBasinci < 0) BarBasinci = 0;
             guncelle = 1;
         }
 
-        // SW6: Alt Sayaç (Alt Limit) ARTIR -> Alt limit, üst limitin üstüne çıkamaz
+        // SW6: Alt Sayaç (Alt Limit) ARTIR
         if (prev_sw6 == 1 && curr_sw6 == 0 && (FarkBasinci < (BarBasinci - 1))) {
             FarkBasinci++;
             if (FarkBasinci > 25) FarkBasinci = 25;
@@ -240,23 +303,27 @@ int main(void) {
         prev_sw3 = curr_sw3;
         prev_sw6 = curr_sw6;
 
-        // Ayar butonuna basıldığında ekranı hedef değerleri gösterecek moda al
+        // Ayar butonlarına her basışta 2 saniyelik kayıt sayacını sıfırla
         if (guncelle) {
             counter_mode = 1;
             counter_timeout = 0;
         }
 
-        // MERKEZİ EKRAN YÖNETİMİ
+        // MERKEZİ EKRAN YÖNETİMİ & EEPROM YAZMA
         if (counter_mode) {
-            // Butona basılırken veya basıldıktan sonra ~1 sn boyunca ayar değerleri görünür
             Display_UpdateCounters((uint8_t)BarBasinci, (uint8_t)FarkBasinci);
             counter_timeout++;
-            if (counter_timeout >= 50) {
+
+            // Butonlardan el çekildikten tam 2 saniye sonra (100 * 20ms = 2000ms)
+            if (counter_timeout >= 100) {
                 counter_mode = 0;
+
+                // NVM EEPROM'a güvenli şekilde kaydet
+                EEPROM_GuvenliYaz(EEPROM_ADDR_BAR, (uint8_t)BarBasinci);
+                EEPROM_GuvenliYaz(EEPROM_ADDR_FARK, (uint8_t)FarkBasinci);
             }
         }
         else {
-            // Normal gösterim: Üstte anlık hat basıncı, altta belirlenen alt limit
             Display_UpdatePressure((uint8_t)hatBasinci(), (uint8_t)FarkBasinci);
         }
 
@@ -287,7 +354,7 @@ int main(void) {
             }
         }
 
-        // Pompa Kontrolü: Butonla limit değiştirildiği an döngü içinde anında değerlendirilir
+        // Pompa Gerçek Zamanlı Kontrolü
         if (pompa_control_active) {
             start((uint16_t)BarBasinci, (uint16_t)FarkBasinci);
         }
